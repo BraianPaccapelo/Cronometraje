@@ -1,13 +1,88 @@
-import corredores
 import validaciones
 import time
 from datetime import timedelta
-import csv
+import sqlite3
 from corredores import Corredores
+import requests
 
 resultados = []
 corredores = []
 
+conexion = sqlite3.connect("cronometraje.db")
+cursor = conexion.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS corredores (
+    dni TEXT,
+    apellido TEXT,
+    nombre TEXT,
+    sexo TEXT,
+    ciudad TEXT,
+    edad INTEGER,
+    team TEXT,
+    distancia TEXT,
+    talle TEXT,
+    categoria TEXT,
+    numero_remera INTEGER
+)
+""")
+
+conexion.commit()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS resultados (
+    numero_remera INTEGER,
+    nombre TEXT,
+    tiempo TEXT,
+    sincronizado INTEGER DEFAULT 0
+)
+""")
+
+conexion.commit()
+
+
+
+def sincronizar_resultados():
+    cursor.execute("""
+    SELECT rowid, numero_remera, nombre, tiempo
+    FROM resultados
+    WHERE sincronizado = 0
+    """)
+
+    pendientes = cursor.fetchall()
+
+    for resultado in pendientes:
+
+        rowid = resultado[0]
+
+        datos = {
+            "numero_remera": resultado[1],
+            "nombre": resultado[2],
+            "tiempo": resultado[3]
+        }
+
+        try:
+
+            respuesta = requests.post(
+                "http://127.0.0.1:5000/resultado",
+                json=datos
+            )
+
+            if respuesta.status_code == 200:
+
+                cursor.execute("""
+                UPDATE resultados
+                SET sincronizado = 1
+                WHERE rowid = ?
+                """, (rowid,))
+
+                conexion.commit()
+
+                print("Resultado sincronizado:", datos)
+
+        except:
+
+            print("No hay conexión con el servidor.")
 def pedir_talle():
     """
     Talles válidos
@@ -64,18 +139,30 @@ def pedir_numero_remera(corredores):
             continue
 
         return numero
-with open("corredores.csv", newline="", encoding="utf-8") as archivo:
+cursor.execute("SELECT * FROM corredores")
 
-    lector = csv.DictReader(archivo)
+datos = cursor.fetchall()
 
-    for fila in lector:
+for fila in datos:
 
-        corredor = Corredores(fila["dni"],fila["apellido"],fila["nombre"],fila["sexo"],fila["ciudad"],int(fila["edad"]),fila["team"],fila["distancia"],fila["talle"],fila["categoria"],int(fila["numero_remera"]))
+    corredor = Corredores(
+        fila[0],
+        fila[1],
+        fila[2],
+        fila[3],
+        fila[4],
+        fila[5],
+        fila[6],
+        fila[7],
+        fila[8],
+        fila[9],
+        fila[10]
+    )
 
-        corredores.append(corredor)
+    corredores.append(corredor)
 print("Corredores cargados correctamente.\n")
-for corredor in corredores:
-    print(corredor.numero_remera,corredor.nombre,corredor.apellido,corredor.distancia)
+
+    
 
 
 print("1.Registrar nuevo corredor")
@@ -94,15 +181,33 @@ if (y == 1):
         distancia = validaciones.pedir_distancia()
         talle = pedir_talle()
         categoria = validaciones.pedir_categoria()
-        numero_remera = pedir_numero_remera()
+        numero_remera = pedir_numero_remera(corredores)
+
         nuevo_corredor = Corredores(dni, apellido, nombre, sexo, ciudad, edad, team, distancia, talle, categoria, numero_remera)
+
         corredores.append(nuevo_corredor)
-        with open("corredores.csv", "a", newline="", encoding="utf-8") as archivo:
 
-            escritor = csv.writer(archivo)
+        cursor.execute("""
+        INSERT INTO corredores
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            dni,
+            apellido,
+            nombre,
+            sexo,
+            ciudad,
+            edad,
+            team,
+            distancia,
+            talle,
+            categoria,
+            numero_remera
+        ))
 
-            escritor.writerow([dni,apellido,nombre,sexo,ciudad,edad,team,distancia,talle,categoria,numero_remera])
-            print("Guardado en CSV correctamente")
+        conexion.commit()
+
+        print("Guardado en SQLite correctamente")
+
         
         
 if y == 2:
@@ -119,8 +224,6 @@ if y == 2:
 
             if entrada == "stop":
 
-                print(corredor.numero_remera,corredor.nombre,"- Tiempo:",tiempo_formateado)
-
                 z = "n"
 
 
@@ -132,14 +235,46 @@ if y == 2:
 
                     if corredor.numero_remera == x:
 
-                        actual = time.time()
+                        cursor.execute(
+                            "SELECT * FROM resultados WHERE numero_remera = ?",
+                            (x,)
+                        )
 
-                        transcurrido = actual - inicio
+                        ya_llego = cursor.fetchone()
 
-                        tiempo_formateado = timedelta(seconds=transcurrido)
+                        if ya_llego:
 
-                        resultados.append(corredor)
+                            print("Ese corredor ya registró llegada")
 
-                        resultados.append(tiempo_formateado)
+                        else:
 
-                        print(corredor.numero_remera,corredor.nombre,"- Tiempo:",tiempo_formateado)
+                            actual = time.time()
+
+                            transcurrido = actual - inicio
+
+                            tiempo_formateado = timedelta(seconds=transcurrido)
+
+                            resultados.append(corredor)
+
+                            resultados.append(tiempo_formateado)
+
+                            cursor.execute("""
+                            INSERT INTO resultados
+                            VALUES (?, ?, ?, ?)
+                            """, (
+                                corredor.numero_remera,
+                                corredor.nombre,
+                                str(tiempo_formateado),
+                                0
+                            ))
+
+                            conexion.commit()
+
+                            print(
+                                corredor.numero_remera,
+                                corredor.nombre,
+                                "- Tiempo:",
+                                tiempo_formateado
+                            )
+
+                            sincronizar_resultados()

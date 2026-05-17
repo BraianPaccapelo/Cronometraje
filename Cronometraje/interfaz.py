@@ -1,112 +1,400 @@
 import customtkinter as ctk
+import sqlite3
+import requests
+import time
+from datetime import timedelta
 from tkinter import messagebox
-from validaciones import pedir_numero_remera, pedir_texto, pedir_sexo, pedir_distancia, pedir_categoria
 from corredores import Corredores
 
-# Lista de corredores (simulación de la lista en validaciones)
-corredores = []
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
 
-# Configuración de la ventana principal
-ctk.set_appearance_mode("System")  # Modo de apariencia (System, Dark, Light)
-ctk.set_default_color_theme("blue")  # Tema de color
+app = ctk.CTk()
+app.geometry("1000x700")
+app.title("Sistema de Cronometraje")
 
-class InterfazCorredores(ctk.CTk):
-    def __init__(self):
-        super().__init__()
+# =========================
+# BASE DE DATOS
+# =========================
 
-        self.title("Gestión de Corredores")
-        self.geometry("500x600")
+conexion = sqlite3.connect("cronometraje.db")
+cursor = conexion.cursor()
 
-        # Etiqueta de título
-        self.label_titulo = ctk.CTkLabel(self, text="Registro de Corredores", font=ctk.CTkFont(size=20, weight="bold"))
-        self.label_titulo.pack(pady=10)
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS corredores (
+    dni TEXT,
+    apellido TEXT,
+    nombre TEXT,
+    sexo TEXT,
+    ciudad TEXT,
+    edad INTEGER,
+    team TEXT,
+    distancia TEXT,
+    talle TEXT,
+    categoria TEXT,
+    numero_remera INTEGER
+)
+""")
 
-        # Campos de entrada
-        self.entry_dni = ctk.CTkEntry(self, placeholder_text="DNI")
-        self.entry_dni.pack(pady=5)
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS resultados (
+    numero_remera INTEGER,
+    nombre TEXT,
+    tiempo TEXT,
+    sincronizado INTEGER DEFAULT 0
+)
+""")
+conexion.commit()
 
-        self.entry_nombre = ctk.CTkEntry(self, placeholder_text="Nombre")
-        self.entry_nombre.pack(pady=5)
+# =========================
+# VARIABLES
+# =========================
 
-        self.entry_apellido = ctk.CTkEntry(self, placeholder_text="Apellido")
-        self.entry_apellido.pack(pady=5)
+inicio = None
+cronometro_activo = False
 
-        self.entry_ciudad = ctk.CTkEntry(self, placeholder_text="Ciudad")
-        self.entry_ciudad.pack(pady=5)
+# =========================
+# FUNCIONES
+# =========================
 
-        self.entry_edad = ctk.CTkEntry(self, placeholder_text="Edad")
-        self.entry_edad.pack(pady=5)
+def sincronizar_resultados():
 
-        self.entry_team = ctk.CTkEntry(self, placeholder_text="Team")
-        self.entry_team.pack(pady=5)
+    cursor.execute("""
+    SELECT rowid, numero_remera, nombre, tiempo
+    FROM resultados
+    WHERE sincronizado = 0
+    """)
 
-        self.entry_numero_remera = ctk.CTkEntry(self, placeholder_text="Número de Remera")
-        self.entry_numero_remera.pack(pady=5)
+    pendientes = cursor.fetchall()
 
-        # Botones para seleccionar sexo, distancia y categoría
-        self.button_sexo = ctk.CTkButton(self, text="Seleccionar Sexo", command=self.seleccionar_sexo)
-        self.button_sexo.pack(pady=5)
+    for resultado in pendientes:
 
-        self.button_distancia = ctk.CTkButton(self, text="Seleccionar Distancia", command=self.seleccionar_distancia)
-        self.button_distancia.pack(pady=5)
+        rowid = resultado[0]
 
-        self.button_categoria = ctk.CTkButton(self, text="Seleccionar Categoría", command=self.seleccionar_categoria)
-        self.button_categoria.pack(pady=5)
+        datos = {
+            "numero_remera": resultado[1],
+            "nombre": resultado[2],
+            "tiempo": resultado[3]
+        }
 
-        # Botón para registrar corredor
-        self.button_registrar = ctk.CTkButton(self, text="Registrar Corredor", command=self.registrar_corredor)
-        self.button_registrar.pack(pady=10)
-
-        # Lista de corredores registrados
-        self.label_lista = ctk.CTkLabel(self, text="Corredores Registrados:", font=ctk.CTkFont(size=16, weight="bold"))
-        self.label_lista.pack(pady=10)
-
-        self.text_lista = ctk.CTkTextbox(self, height=200)
-        self.text_lista.pack(pady=5)
-
-    def seleccionar_sexo(self):
-        self.sexo = pedir_sexo()
-        messagebox.showinfo("Sexo Seleccionado", f"Sexo: {self.sexo}")
-
-    def seleccionar_distancia(self):
-        self.distancia = pedir_distancia()
-        messagebox.showinfo("Distancia Seleccionada", f"Distancia: {self.distancia}")
-
-    def seleccionar_categoria(self):
-        self.categoria = pedir_categoria()
-        messagebox.showinfo("Categoría Seleccionada", f"Categoría: {self.categoria}")
-
-    def registrar_corredor(self):
         try:
-            dni = self.entry_dni.get()
-            nombre = pedir_texto(self.entry_nombre.get())
-            apellido = pedir_texto(self.entry_apellido.get())
-            ciudad = self.entry_ciudad.get()
-            edad = int(self.entry_edad.get())
-            team = self.entry_team.get()
-            numero_remera = int(self.entry_numero_remera.get())
 
-            # Validar número de remera
-            if any(corredor.numero_remera == numero_remera for corredor in corredores):
-                messagebox.showerror("Error", "El número de remera ya está registrado.")
-                return
+            respuesta = requests.post(
+                "http://127.0.0.1:5000/resultado",
+                json=datos
+            )
 
-            # Crear y agregar corredor
-            nuevo_corredor = Corredores(dni, apellido, nombre, self.sexo, ciudad, edad, team, self.distancia, "M", self.categoria, numero_remera)
-            corredores.append(nuevo_corredor)
+            if respuesta.status_code == 200:
 
-            # Actualizar lista de corredores
-            self.actualizar_lista()
-            messagebox.showinfo("Éxito", "Corredor registrado correctamente.")
+                cursor.execute("""
+                UPDATE resultados
+                SET sincronizado = 1
+                WHERE rowid = ?
+                """, (rowid,))
+
+                conexion.commit()
+
+                print("Resultado sincronizado:", datos)
+
         except Exception as e:
-            messagebox.showerror("Error", f"Error al registrar corredor: {e}")
 
-    def actualizar_lista(self):
-        self.text_lista.delete("1.0", "end")
-        for corredor in corredores:
-            self.text_lista.insert("end", f"{corredor.numero_remera}: {corredor.nombre} {corredor.apellido} - {corredor.distancia}\n")
+            print(e)
 
-# Ejecutar la interfaz
-if __name__ == "__main__":
-    app = InterfazCorredores()
-    app.mainloop()
+def actualizar_cronometro():
+
+    if cronometro_activo:
+
+        actual = time.time()
+        transcurrido = actual - inicio
+
+        tiempo = str(timedelta(seconds=int(transcurrido)))
+
+        label_cronometro.configure(text=tiempo)
+
+        app.after(1000, actualizar_cronometro)
+
+
+def iniciar_cronometro():
+
+    global inicio
+    global cronometro_activo
+
+    inicio = time.time()
+    cronometro_activo = True
+
+    label_estado.configure(text="Cronómetro iniciado")
+
+    actualizar_cronometro()
+
+
+def detener_cronometro():
+
+    global cronometro_activo
+
+    cronometro_activo = False
+
+    label_estado.configure(text="Cronómetro detenido")
+
+
+def registrar_llegada(event=None):
+
+    if not cronometro_activo:
+        messagebox.showerror("Error", "El cronómetro no está iniciado")
+        return
+
+    entrada = entry_remera.get().strip()
+
+    if not entrada.isdigit():
+        messagebox.showerror("Error", "Ingrese un número válido")
+        return
+
+    numero_remera = int(entrada)
+
+    cursor.execute(
+        "SELECT * FROM corredores WHERE numero_remera = ?",
+        (numero_remera,)
+    )
+
+    corredor = cursor.fetchone()
+
+    if corredor is None:
+        messagebox.showerror("Error", "Corredor no encontrado")
+        return
+
+    actual = time.time()
+    transcurrido = actual - inicio
+
+    tiempo_formateado = str(
+        timedelta(seconds=int(transcurrido))
+    )
+
+    nombre = corredor[2]
+
+    cursor.execute("""
+    INSERT INTO resultados
+    VALUES (?, ?, ?, ?)
+    """, (
+        numero_remera,
+        nombre,
+        tiempo_formateado,
+        0
+    ))
+
+    conexion.commit()
+
+    sincronizar_resultados()
+
+    textbox_resultados.insert(
+        "end",
+        f"{numero_remera} - {nombre} - {tiempo_formateado}\n"
+    )
+
+    textbox_resultados.see("end")
+
+    entry_remera.delete(0, "end")
+
+
+# =========================
+# REGISTRO DE CORREDORES
+# =========================
+
+def guardar_corredor():
+
+    try:
+
+        dni = entry_dni.get()
+        apellido = entry_apellido.get()
+        nombre = entry_nombre.get()
+        sexo = combo_sexo.get()
+        ciudad = entry_ciudad.get()
+        edad = int(entry_edad.get())
+        team = entry_team.get()
+        distancia = combo_distancia.get()
+        talle = combo_talle.get()
+        categoria = combo_categoria.get()
+        numero_remera = int(entry_numero.get())
+
+        cursor.execute(
+            "SELECT * FROM corredores WHERE numero_remera = ?",
+            (numero_remera,)
+        )
+
+        existe = cursor.fetchone()
+
+        if existe:
+            messagebox.showerror(
+                "Error",
+                "Ese número de remera ya existe"
+            )
+            return
+
+        cursor.execute("""
+        INSERT INTO corredores
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            dni,
+            apellido,
+            nombre,
+            sexo,
+            ciudad,
+            edad,
+            team,
+            distancia,
+            talle,
+            categoria,
+            numero_remera
+        ))
+
+        conexion.commit()
+
+        messagebox.showinfo(
+            "Éxito",
+            "Corredor registrado correctamente"
+        )
+
+    except:
+        messagebox.showerror(
+            "Error",
+            "Verifique los datos ingresados"
+        )
+
+
+# =========================
+# INTERFAZ
+# =========================
+
+frame_izq = ctk.CTkFrame(app)
+frame_izq.pack(side="left", fill="both", expand=True, padx=10, pady=10)
+
+frame_der = ctk.CTkFrame(app)
+frame_der.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+
+# =========================
+# CRONOMETRO
+# =========================
+
+label_titulo = ctk.CTkLabel(
+    frame_izq,
+    text="CRONOMETRAJE",
+    font=("Arial", 28, "bold")
+)
+label_titulo.pack(pady=10)
+
+label_cronometro = ctk.CTkLabel(
+    frame_izq,
+    text="00:00:00",
+    font=("Arial", 40, "bold")
+)
+label_cronometro.pack(pady=20)
+
+label_estado = ctk.CTkLabel(
+    frame_izq,
+    text="Esperando inicio"
+)
+label_estado.pack(pady=10)
+
+boton_iniciar = ctk.CTkButton(
+    frame_izq,
+    text="Iniciar",
+    command=iniciar_cronometro
+)
+boton_iniciar.pack(pady=10)
+
+boton_detener = ctk.CTkButton(
+    frame_izq,
+    text="Detener",
+    command=detener_cronometro
+)
+boton_detener.pack(pady=10)
+
+entry_remera = ctk.CTkEntry(
+    frame_izq,
+    placeholder_text="Número de remera"
+)
+entry_remera.pack(pady=20)
+
+entry_remera.bind("<Return>", registrar_llegada)
+
+boton_registrar = ctk.CTkButton(
+    frame_izq,
+    text="Registrar llegada",
+    command=registrar_llegada
+)
+boton_registrar.pack(pady=10)
+
+textbox_resultados = ctk.CTkTextbox(
+    frame_izq,
+    width=400,
+    height=300
+)
+textbox_resultados.pack(pady=20)
+
+# =========================
+# REGISTRO
+# =========================
+
+label_registro = ctk.CTkLabel(
+    frame_der,
+    text="REGISTRO DE CORREDORES",
+    font=("Arial", 24, "bold")
+)
+label_registro.pack(pady=10)
+
+entry_dni = ctk.CTkEntry(frame_der, placeholder_text="DNI")
+entry_dni.pack(pady=5)
+
+entry_apellido = ctk.CTkEntry(frame_der, placeholder_text="Apellido")
+entry_apellido.pack(pady=5)
+
+entry_nombre = ctk.CTkEntry(frame_der, placeholder_text="Nombre")
+entry_nombre.pack(pady=5)
+
+combo_sexo = ctk.CTkComboBox(frame_der, values=["M", "F"])
+combo_sexo.pack(pady=5)
+
+entry_ciudad = ctk.CTkEntry(frame_der, placeholder_text="Ciudad")
+entry_ciudad.pack(pady=5)
+
+entry_edad = ctk.CTkEntry(frame_der, placeholder_text="Edad")
+entry_edad.pack(pady=5)
+
+entry_team = ctk.CTkEntry(frame_der, placeholder_text="Team")
+entry_team.pack(pady=5)
+
+combo_distancia = ctk.CTkComboBox(
+    frame_der,
+    values=["6KM", "12KM", "18KM"]
+)
+combo_distancia.pack(pady=5)
+
+combo_talle = ctk.CTkComboBox(
+    frame_der,
+    values=["XS", "S", "M", "L", "XL", "XXL"]
+)
+combo_talle.pack(pady=5)
+
+combo_categoria = ctk.CTkComboBox(
+    frame_der,
+    values=[
+        "16-19", "20-24", "25-29",
+        "30-34", "35-39", "40-44",
+        "45-49", "50-54", "55-59",
+        "60-64", "65-69", "70"
+    ]
+)
+combo_categoria.pack(pady=5)
+
+entry_numero = ctk.CTkEntry(
+    frame_der,
+    placeholder_text="Número de remera"
+)
+entry_numero.pack(pady=5)
+
+boton_guardar = ctk.CTkButton(
+    frame_der,
+    text="Guardar corredor",
+    command=guardar_corredor
+)
+boton_guardar.pack(pady=20)
+
+app.mainloop()
