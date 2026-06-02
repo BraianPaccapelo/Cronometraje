@@ -1,88 +1,13 @@
 import validaciones
 import time
-from datetime import timedelta
-import sqlite3
-from corredores import Corredores
-import requests
+from datetime import datetime
+import mysql.connector
+from db import get_conexion, CARRERA_ID
 
-resultados = []
 corredores = []
 
-conexion = sqlite3.connect("cronometraje.db")
-cursor = conexion.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS corredores (
-    dni TEXT,
-    apellido TEXT,
-    nombre TEXT,
-    sexo TEXT,
-    ciudad TEXT,
-    edad INTEGER,
-    team TEXT,
-    distancia TEXT,
-    talle TEXT,
-    categoria TEXT,
-    numero_remera INTEGER
-)
-""")
-
-conexion.commit()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS resultados (
-    numero_remera INTEGER,
-    nombre TEXT,
-    tiempo TEXT,
-    sincronizado INTEGER DEFAULT 0
-)
-""")
-
-conexion.commit()
 
 
-
-def sincronizar_resultados():
-    cursor.execute("""
-    SELECT rowid, numero_remera, nombre, tiempo
-    FROM resultados
-    WHERE sincronizado = 0
-    """)
-
-    pendientes = cursor.fetchall()
-
-    for resultado in pendientes:
-
-        rowid = resultado[0]
-
-        datos = {
-            "numero_remera": resultado[1],
-            "nombre": resultado[2],
-            "tiempo": resultado[3]
-        }
-
-        try:
-
-            respuesta = requests.post(
-                "http://127.0.0.1:5000/resultado",
-                json=datos
-            )
-
-            if respuesta.status_code == 200:
-
-                cursor.execute("""
-                UPDATE resultados
-                SET sincronizado = 1
-                WHERE rowid = ?
-                """, (rowid,))
-
-                conexion.commit()
-
-                print("Resultado sincronizado:", datos)
-
-        except:
-
-            print("No hay conexión con el servidor.")
 def pedir_talle():
     """
     Talles válidos
@@ -100,14 +25,6 @@ def pedir_talle():
             return talle
 
         print("ERROR: Talle inválido.")
-def numero_remera_existente(numero):
-
-    for corredor in corredores:
-
-        if corredor.numero_remera == numero:
-            return True
-
-    return False
 def pedir_numero(mensaje):
     """
     Solo números enteros
@@ -139,31 +56,6 @@ def pedir_numero_remera(corredores):
             continue
 
         return numero
-cursor.execute("SELECT * FROM corredores")
-
-datos = cursor.fetchall()
-
-for fila in datos:
-
-    corredor = Corredores(
-        fila[0],
-        fila[1],
-        fila[2],
-        fila[3],
-        fila[4],
-        fila[5],
-        fila[6],
-        fila[7],
-        fila[8],
-        fila[9],
-        fila[10]
-    )
-
-    corredores.append(corredor)
-print("Corredores cargados correctamente.\n")
-
-    
-
 
 print("1.Registrar nuevo corredor")
 print ("2.Iniciar cronometraje")
@@ -171,42 +63,66 @@ print ("2.Iniciar cronometraje")
 
 y = int(input("Seleccione una opción: "))
 if (y == 1):
-        dni = input("DNI: ")
+        dni      = input("DNI: ")
         apellido = validaciones.pedir_texto("Apellido: ")
-        nombre = validaciones.pedir_texto("Nombre: ")
-        sexo = validaciones.pedir_sexo()
-        ciudad = input("Ciudad: ").strip()
-        edad = int(input("Edad: "))
-        team = input("Team: ").strip()
-        distancia = validaciones.pedir_distancia()
-        talle = pedir_talle()
-        categoria = validaciones.pedir_categoria()
-        numero_remera = pedir_numero_remera(corredores)
+        nombre   = validaciones.pedir_texto("Nombre: ")
+        sexo     = validaciones.pedir_sexo()
+        ciudad   = input("Ciudad: ").strip()
 
-        nuevo_corredor = Corredores(dni, apellido, nombre, sexo, ciudad, edad, team, distancia, talle, categoria, numero_remera)
+        while True:
+            fecha_str = input("Fecha de nacimiento (dd/mm/aaaa): ").strip()
+            try:
+                fecha_nacimiento = datetime.strptime(fecha_str, "%d/%m/%Y").date()
+                break
+            except ValueError:
+                print("ERROR: Formato inválido. Use dd/mm/aaaa.")
 
-        corredores.append(nuevo_corredor)
+        team             = input("Team: ").strip()
+        distancia_nombre = validaciones.pedir_distancia()
+        talle            = pedir_talle()
+        numero_remera    = pedir_numero_remera(corredores)
 
-        cursor.execute("""
-        INSERT INTO corredores
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            dni,
-            apellido,
-            nombre,
-            sexo,
-            ciudad,
-            edad,
-            team,
-            distancia,
-            talle,
-            categoria,
-            numero_remera
-        ))
+        conexion_mysql = None
+        cursor_mysql   = None
 
-        conexion.commit()
+        try:
+            conexion_mysql = get_conexion()
+            cursor_mysql   = conexion_mysql.cursor()
 
-        print("Guardado en SQLite correctamente")
+            distancia_map = {"6KM": 6.00, "12KM": 12.00, "18KM": 18.00}
+            cursor_mysql.execute(
+                "SELECT id FROM distancias WHERE carrera_id = %s AND distancia_km = %s",
+                (CARRERA_ID, distancia_map[distancia_nombre])
+            )
+            row = cursor_mysql.fetchone()
+            if not row:
+                print("ERROR: Distancia no encontrada en la base de datos.")
+            else:
+                distancia_id = row[0]
+
+                cursor_mysql.execute("""
+                    INSERT INTO corredores (dni, apellido, nombre, sexo, ciudad, fecha_nacimiento, team, talle_remera, activo)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (dni, apellido, nombre, sexo, ciudad, fecha_nacimiento, team, talle, 1))
+
+                corredor_id = cursor_mysql.lastrowid
+
+                cursor_mysql.execute("""
+                    INSERT INTO inscripciones (corredor_id, distancia_id, numero_dorsal, estado)
+                    VALUES (%s, %s, %s, %s)
+                """, (corredor_id, distancia_id, numero_remera, 'inscripto'))
+
+                conexion_mysql.commit()
+                print("Corredor registrado en MySQL correctamente.")
+
+        except mysql.connector.Error as e:
+            print(f"Error de base de datos: {e}")
+
+        finally:
+            if cursor_mysql:
+                cursor_mysql.close()
+            if conexion_mysql:
+                conexion_mysql.close()
 
         
         
@@ -229,52 +145,53 @@ if y == 2:
 
             else:
 
-                x = int(entrada)
+                x              = int(entrada)
+                conexion_mysql = None
+                cursor_mysql   = None
 
-                for corredor in corredores:
+                try:
+                    conexion_mysql = get_conexion()
+                    cursor_mysql   = conexion_mysql.cursor()
 
-                    if corredor.numero_remera == x:
+                    cursor_mysql.execute("""
+                        SELECT i.id, c.nombre
+                        FROM inscripciones i
+                        JOIN corredores c ON i.corredor_id = c.id
+                        JOIN distancias d  ON i.distancia_id = d.id
+                        WHERE i.numero_dorsal = %s AND d.carrera_id = %s
+                    """, (x, CARRERA_ID))
 
-                        cursor.execute(
-                            "SELECT * FROM resultados WHERE numero_remera = ?",
-                            (x,)
+                    inscripcion = cursor_mysql.fetchone()
+
+                    if inscripcion is None:
+                        print("ERROR: Corredor no encontrado.")
+                    else:
+                        inscripcion_id = inscripcion[0]
+                        nombre         = inscripcion[1]
+
+                        cursor_mysql.execute(
+                            "SELECT id FROM llegadas WHERE inscripcion_id = %s",
+                            (inscripcion_id,)
                         )
-
-                        ya_llego = cursor.fetchone()
-
-                        if ya_llego:
-
-                            print("Ese corredor ya registró llegada")
-
+                        if cursor_mysql.fetchone():
+                            print("Ese corredor ya registró llegada.")
                         else:
+                            tiempo_llegada = datetime.now()
 
-                            actual = time.time()
+                            cursor_mysql.execute("""
+                                INSERT INTO llegadas (inscripcion_id, usuario_id, tiempo_llegada, metodo_carga)
+                                VALUES (%s, %s, %s, %s)
+                            """, (inscripcion_id, None, tiempo_llegada, 'manual'))
 
-                            transcurrido = actual - inicio
+                            conexion_mysql.commit()
 
-                            tiempo_formateado = timedelta(seconds=transcurrido)
+                            print(x, nombre, "- Tiempo:", tiempo_llegada.strftime("%H:%M:%S"))
 
-                            resultados.append(corredor)
+                except mysql.connector.Error as e:
+                    print(f"Error de base de datos: {e}")
 
-                            resultados.append(tiempo_formateado)
-
-                            cursor.execute("""
-                            INSERT INTO resultados
-                            VALUES (?, ?, ?, ?)
-                            """, (
-                                corredor.numero_remera,
-                                corredor.nombre,
-                                str(tiempo_formateado),
-                                0
-                            ))
-
-                            conexion.commit()
-
-                            print(
-                                corredor.numero_remera,
-                                corredor.nombre,
-                                "- Tiempo:",
-                                tiempo_formateado
-                            )
-
-                            sincronizar_resultados()
+                finally:
+                    if cursor_mysql:
+                        cursor_mysql.close()
+                    if conexion_mysql:
+                        conexion_mysql.close()

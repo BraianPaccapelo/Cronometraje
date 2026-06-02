@@ -1,10 +1,9 @@
 import customtkinter as ctk
-import sqlite3
-import requests
 import time
-from datetime import timedelta
+from datetime import timedelta, datetime
 from tkinter import messagebox
-from corredores import Corredores
+import mysql.connector
+from db import get_conexion, CARRERA_ID
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -12,39 +11,6 @@ ctk.set_default_color_theme("blue")
 app = ctk.CTk()
 app.geometry("1000x700")
 app.title("Sistema de Cronometraje")
-
-# =========================
-# BASE DE DATOS
-# =========================
-
-conexion = sqlite3.connect("cronometraje.db")
-cursor = conexion.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS corredores (
-    dni TEXT,
-    apellido TEXT,
-    nombre TEXT,
-    sexo TEXT,
-    ciudad TEXT,
-    edad INTEGER,
-    team TEXT,
-    distancia TEXT,
-    talle TEXT,
-    categoria TEXT,
-    numero_remera INTEGER
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS resultados (
-    numero_remera INTEGER,
-    nombre TEXT,
-    tiempo TEXT,
-    sincronizado INTEGER DEFAULT 0
-)
-""")
-conexion.commit()
 
 # =========================
 # VARIABLES
@@ -56,49 +22,6 @@ cronometro_activo = False
 # =========================
 # FUNCIONES
 # =========================
-
-def sincronizar_resultados():
-
-    cursor.execute("""
-    SELECT rowid, numero_remera, nombre, tiempo
-    FROM resultados
-    WHERE sincronizado = 0
-    """)
-
-    pendientes = cursor.fetchall()
-
-    for resultado in pendientes:
-
-        rowid = resultado[0]
-
-        datos = {
-            "numero_remera": resultado[1],
-            "nombre": resultado[2],
-            "tiempo": resultado[3]
-        }
-
-        try:
-
-            respuesta = requests.post(
-                "http://127.0.0.1:5000/resultado",
-                json=datos
-            )
-
-            if respuesta.status_code == 200:
-
-                cursor.execute("""
-                UPDATE resultados
-                SET sincronizado = 1
-                WHERE rowid = ?
-                """, (rowid,))
-
-                conexion.commit()
-
-                print("Resultado sincronizado:", datos)
-
-        except Exception as e:
-
-            print(e)
 
 def actualizar_cronometro():
 
@@ -148,50 +71,63 @@ def registrar_llegada(event=None):
         messagebox.showerror("Error", "Ingrese un número válido")
         return
 
-    numero_remera = int(entrada)
+    numero_dorsal  = int(entrada)
+    conexion_mysql = None
+    cursor_mysql   = None
 
-    cursor.execute(
-        "SELECT * FROM corredores WHERE numero_remera = ?",
-        (numero_remera,)
-    )
+    try:
+        conexion_mysql = get_conexion()
+        cursor_mysql   = conexion_mysql.cursor()
 
-    corredor = cursor.fetchone()
+        cursor_mysql.execute("""
+            SELECT i.id, c.nombre
+            FROM inscripciones i
+            JOIN corredores c ON i.corredor_id = c.id
+            JOIN distancias d  ON i.distancia_id = d.id
+            WHERE i.numero_dorsal = %s AND d.carrera_id = %s
+        """, (numero_dorsal, CARRERA_ID))
 
-    if corredor is None:
-        messagebox.showerror("Error", "Corredor no encontrado")
-        return
+        inscripcion = cursor_mysql.fetchone()
 
-    actual = time.time()
-    transcurrido = actual - inicio
+        if inscripcion is None:
+            messagebox.showerror("Error", "Corredor no encontrado")
+            return
 
-    tiempo_formateado = str(
-        timedelta(seconds=int(transcurrido))
-    )
+        inscripcion_id = inscripcion[0]
+        nombre         = inscripcion[1]
 
-    nombre = corredor[2]
+        cursor_mysql.execute(
+            "SELECT id FROM llegadas WHERE inscripcion_id = %s",
+            (inscripcion_id,)
+        )
+        if cursor_mysql.fetchone():
+            messagebox.showerror("Error", "Ese corredor ya registró llegada")
+            return
 
-    cursor.execute("""
-    INSERT INTO resultados
-    VALUES (?, ?, ?, ?)
-    """, (
-        numero_remera,
-        nombre,
-        tiempo_formateado,
-        0
-    ))
+        tiempo_llegada = datetime.now()
 
-    conexion.commit()
+        cursor_mysql.execute("""
+            INSERT INTO llegadas (inscripcion_id, usuario_id, tiempo_llegada, metodo_carga)
+            VALUES (%s, %s, %s, %s)
+        """, (inscripcion_id, None, tiempo_llegada, 'manual'))
 
-    sincronizar_resultados()
+        conexion_mysql.commit()
 
-    textbox_resultados.insert(
-        "end",
-        f"{numero_remera} - {nombre} - {tiempo_formateado}\n"
-    )
+        textbox_resultados.insert(
+            "end",
+            f"{numero_dorsal} - {nombre} - {tiempo_llegada.strftime('%H:%M:%S')}\n"
+        )
+        textbox_resultados.see("end")
+        entry_remera.delete(0, "end")
 
-    textbox_resultados.see("end")
+    except mysql.connector.Error as e:
+        messagebox.showerror("Error de base de datos", str(e))
 
-    entry_remera.delete(0, "end")
+    finally:
+        if cursor_mysql:
+            cursor_mysql.close()
+        if conexion_mysql:
+            conexion_mysql.close()
 
 
 # =========================
@@ -200,63 +136,72 @@ def registrar_llegada(event=None):
 
 def guardar_corredor():
 
+    conexion_mysql = None
+    cursor_mysql = None
+
     try:
+        dni              = entry_dni.get().strip()
+        apellido         = entry_apellido.get().strip()
+        nombre           = entry_nombre.get().strip()
+        sexo             = combo_sexo.get()
+        ciudad           = entry_ciudad.get().strip()
+        fecha_str        = entry_fecha_nacimiento.get().strip()
+        team             = entry_team.get().strip()
+        distancia_nombre = combo_distancia.get()
+        talle            = combo_talle.get()
+        numero_remera    = int(entry_numero.get().strip())
 
-        dni = entry_dni.get()
-        apellido = entry_apellido.get()
-        nombre = entry_nombre.get()
-        sexo = combo_sexo.get()
-        ciudad = entry_ciudad.get()
-        edad = int(entry_edad.get())
-        team = entry_team.get()
-        distancia = combo_distancia.get()
-        talle = combo_talle.get()
-        categoria = combo_categoria.get()
-        numero_remera = int(entry_numero.get())
-
-        cursor.execute(
-            "SELECT * FROM corredores WHERE numero_remera = ?",
-            (numero_remera,)
-        )
-
-        existe = cursor.fetchone()
-
-        if existe:
-            messagebox.showerror(
-                "Error",
-                "Ese número de remera ya existe"
-            )
+        try:
+            fecha_nacimiento = datetime.strptime(fecha_str, "%d/%m/%Y").date()
+        except ValueError:
+            messagebox.showerror("Error", "Fecha inválida. Use el formato dd/mm/aaaa")
             return
 
-        cursor.execute("""
-        INSERT INTO corredores
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            dni,
-            apellido,
-            nombre,
-            sexo,
-            ciudad,
-            edad,
-            team,
-            distancia,
-            talle,
-            categoria,
-            numero_remera
-        ))
+        conexion_mysql = get_conexion()
+        cursor_mysql = conexion_mysql.cursor()
 
-        conexion.commit()
-
-        messagebox.showinfo(
-            "Éxito",
-            "Corredor registrado correctamente"
+        cursor_mysql.execute(
+            "SELECT id FROM inscripciones WHERE numero_dorsal = %s",
+            (numero_remera,)
         )
+        if cursor_mysql.fetchone():
+            messagebox.showerror("Error", "Ese número de remera ya existe")
+            return
 
-    except:
-        messagebox.showerror(
-            "Error",
-            "Verifique los datos ingresados"
+        distancia_map = {"6KM": 6.00, "12KM": 12.00, "18KM": 18.00}
+        cursor_mysql.execute(
+            "SELECT id FROM distancias WHERE carrera_id = %s AND distancia_km = %s",
+            (CARRERA_ID, distancia_map[distancia_nombre])
         )
+        row = cursor_mysql.fetchone()
+        if not row:
+            messagebox.showerror("Error", "Distancia no encontrada en la base de datos")
+            return
+        distancia_id = row[0]
+
+        cursor_mysql.execute("""
+            INSERT INTO corredores (dni, apellido, nombre, sexo, ciudad, fecha_nacimiento, team, talle_remera, activo)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (dni, apellido, nombre, sexo, ciudad, fecha_nacimiento, team, talle, 1))
+
+        corredor_id = cursor_mysql.lastrowid
+
+        cursor_mysql.execute("""
+            INSERT INTO inscripciones (corredor_id, distancia_id, numero_dorsal, estado)
+            VALUES (%s, %s, %s, %s)
+        """, (corredor_id, distancia_id, numero_remera, 'inscripto'))
+
+        conexion_mysql.commit()
+        messagebox.showinfo("Éxito", "Corredor registrado correctamente")
+
+    except mysql.connector.Error as e:
+        messagebox.showerror("Error de base de datos", str(e))
+
+    finally:
+        if cursor_mysql:
+            cursor_mysql.close()
+        if conexion_mysql:
+            conexion_mysql.close()
 
 
 # =========================
@@ -355,8 +300,8 @@ combo_sexo.pack(pady=5)
 entry_ciudad = ctk.CTkEntry(frame_der, placeholder_text="Ciudad")
 entry_ciudad.pack(pady=5)
 
-entry_edad = ctk.CTkEntry(frame_der, placeholder_text="Edad")
-entry_edad.pack(pady=5)
+entry_fecha_nacimiento = ctk.CTkEntry(frame_der, placeholder_text="Fecha de nacimiento (dd/mm/aaaa)")
+entry_fecha_nacimiento.pack(pady=5)
 
 entry_team = ctk.CTkEntry(frame_der, placeholder_text="Team")
 entry_team.pack(pady=5)
@@ -373,16 +318,6 @@ combo_talle = ctk.CTkComboBox(
 )
 combo_talle.pack(pady=5)
 
-combo_categoria = ctk.CTkComboBox(
-    frame_der,
-    values=[
-        "16-19", "20-24", "25-29",
-        "30-34", "35-39", "40-44",
-        "45-49", "50-54", "55-59",
-        "60-64", "65-69", "70"
-    ]
-)
-combo_categoria.pack(pady=5)
 
 entry_numero = ctk.CTkEntry(
     frame_der,

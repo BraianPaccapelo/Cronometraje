@@ -1,49 +1,64 @@
-from flask import Flask, request
+from flask import Flask
+import mysql.connector
+from db import get_conexion, CARRERA_ID
 
 app = Flask(__name__)
-
-resultados_web = []
-
-@app.route("/resultado", methods=["POST"])
-def recibir_resultado():
-
-    datos = request.json
-
-    resultados_web.append(datos)
-
-    print("Resultado recibido:")
-    print(datos)
-
-    return {
-        "mensaje": "Resultado recibido"
-    }, 200
 
 @app.route("/")
 def tabla_posiciones():
 
-    html = """
+    conexion_mysql = None
+    cursor_mysql   = None
+
+    try:
+        conexion_mysql = get_conexion()
+        cursor_mysql   = conexion_mysql.cursor()
+
+        cursor_mysql.execute(
+            "SELECT * FROM v_tabla_posiciones WHERE carrera_id = %s",
+            (CARRERA_ID,)
+        )
+
+        filas    = cursor_mysql.fetchall()
+        columnas = [col[0] for col in cursor_mysql.description]
+
+        encabezados = "".join(f"<th>{col}</th>" for col in columnas)
+        cuerpo = ""
+        for fila in filas:
+            cuerpo += "<tr>" + "".join(f"<td>{celda}</td>" for celda in fila) + "</tr>"
+
+        return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="refresh" content="10">
+    <title>Tabla de posiciones</title>
+    <style>
+        body  {{ font-family: Arial, sans-serif; padding: 20px; }}
+        table {{ border-collapse: collapse; width: 100%; }}
+        th, td {{ border: 1px solid #ccc; padding: 8px 12px; text-align: left; }}
+        th {{ background-color: #333; color: white; }}
+        tr:nth-child(even) {{ background-color: #f2f2f2; }}
+    </style>
+</head>
+<body>
     <h1>Tabla de posiciones</h1>
-    <table border='1' cellpadding='10'>
-        <tr>
-            <th>Número</th>
-            <th>Nombre</th>
-            <th>Tiempo</th>
-        </tr>
-    """
+    <table>
+        <thead><tr>{encabezados}</tr></thead>
+        <tbody>{cuerpo}</tbody>
+    </table>
+</body>
+</html>"""
 
-    for resultado in resultados_web:
+    except mysql.connector.Error as e:
+        return f"<h2>Error de base de datos</h2><p>{e}</p>", 500
 
-        html += f"""
-        <tr>
-            <td>{resultado['numero_remera']}</td>
-            <td>{resultado['nombre']}</td>
-            <td>{resultado['tiempo']}</td>
-        </tr>
-        """
+    finally:
+        if cursor_mysql:
+            cursor_mysql.close()
+        if conexion_mysql:
+            conexion_mysql.close()
 
-    html += "</table>"
-
-    return html
 
 if __name__ == "__main__":
     app.run(debug=True)
