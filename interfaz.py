@@ -291,41 +291,35 @@ def guardar_corredor():
 
 
 def modificar_corredor():
-
     conexion_mysql = None
     cursor_mysql = None
 
     try:
-
         datos = sheet.get_sheet_data()
 
         conexion_mysql = get_conexion()
         cursor_mysql = conexion_mysql.cursor()
 
         for fila in datos:
-
             inscripcion_id = int(fila[0])
-            dorsal         = int(fila[1])
-            apellido       = fila[2]
-            nombre         = fila[3]
-            sexo           = fila[4]
-            ciudad         = fila[5]
-            team           = fila[6]
+            # dorsal = fila[1]  ← ya no se usa
+            apellido = fila[2]
+            nombre   = fila[3]
+            sexo     = fila[4]
+            ciudad   = fila[5]
+            team     = fila[6]
 
             cursor_mysql.execute("""
                 UPDATE corredores c
-                JOIN inscripciones i
-                    ON c.id = i.corredor_id
+                JOIN inscripciones i ON c.id = i.corredor_id
                 SET
-                    i.numero_dorsal = %s,
                     c.apellido = %s,
-                    c.nombre = %s,
-                    c.sexo = %s,
-                    c.ciudad = %s,
-                    c.team = %s
+                    c.nombre   = %s,
+                    c.sexo     = %s,
+                    c.ciudad   = %s,
+                    c.team     = %s
                 WHERE i.id = %s
             """, (
-                dorsal,
                 apellido,
                 nombre,
                 sexo,
@@ -335,26 +329,15 @@ def modificar_corredor():
             ))
 
         conexion_mysql.commit()
-
-        messagebox.showinfo(
-            "Éxito",
-            "Cambios guardados correctamente"
-        )
-
+        messagebox.showinfo("Éxito", "Cambios guardados correctamente")
         cargar_corredores()
 
     except Exception as e:
-
-        messagebox.showerror(
-            "Error",
-            str(e)
-        )
+        messagebox.showerror("Error", str(e))
 
     finally:
-
         if cursor_mysql:
             cursor_mysql.close()
-
         if conexion_mysql:
             conexion_mysql.close()
 
@@ -491,6 +474,9 @@ def abrir_administracion():
     )
 
     sheet.enable_bindings()
+
+    sheet.enable_bindings()
+    sheet.readonly_columns(columns=[0, 1])  # Bloquea ID y Dorsal
 
     sheet.pack(
         fill="both",
